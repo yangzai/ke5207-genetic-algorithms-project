@@ -1,0 +1,152 @@
+---
+title: 'KE5207 GA Modelling CA: Optimising Load Distribution Problem in R'
+author: Ang Hao Yang A0042253U
+output: pdf_document
+toc: T
+references:
+- id: scrucca2016a
+  URL: https://cran.r-project.org/web/packages/GA
+  author:
+  - family: Scrucca
+    given: Luca
+  edition: 3.0.2
+  issued:
+    month: 6
+    year: 2016
+  publisher: CRAN
+  title: Package \'GA\'
+- id: scrucca2013a
+  DOI: 10.18637/jss.v053.i04
+  URL: https://www.jstatsoft.org/article/view/v053i04
+  author:
+  - family: Scrucca
+    given: Luca
+  container-title: Journal of Statistical Software
+  issue: 4
+  issued:
+    month: 4
+    year: 2013
+  publisher: Foundation for Open Access Statistics
+  title: 'GA: A Package for Genetic Algorithms in R'
+  type: article-journal
+  volume: 53
+nocite: |
+  @scrucca2016a, @scrucca2013a
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This project references the load distrubution problem in Workshop 1 implemented in Excel. The motivation is to implement the problem model in code which would better allow us to explore and learn about Gentic Alogrithms (GA) at a lower level. An implentation in code would be more portable and useful in the context of integration with larger systems. It would also allow for greater performance and flexibility in tweaking parameters, and hopefully through that we would be able to better optimise our results.
+
+
+## Problem Description
+
+When loading containers in vessels or packages in aircraft, it is necessary to ensure that the weight is more or less evenly distibuted. It is also necessary to ensure that lighter goods are on top of heavier ones. The dataset provide consist of the weights of 64 for packages. These packages are to be grouped in stacks of 4, giving us 16 stacks.
+
+Load distribution is generally a NP-complete problem and thus cannot verifiably be perfectly figured in a reasonable amount of time. GA is therefore a suitable candidate to derieve a good enough approximation within reasonable time constraint.
+
+
+## Problem Model
+
+### Overview
+The model will be described along with the code. The code is written in R with a library called 'GA' for GA computation. First and foremost it is necessary to load the libraries and the dataset required, including the individual string provided as the given solution, to act as a benchmark comparision. Some global variables are also defined, including the average weight of all packages. The data file is named `WS1GA-soln.xlsx` and the full code can be found in `ga.R`.
+```{r init, message = F}
+library(xlsx)
+library(GA)
+
+df = read.xlsx('WS1GA-soln.xlsx', sheetName = 'Data')
+given = read.xlsx('WS1GA-soln.xlsx', sheetName = 'Solution')
+
+package.count = nrow(df)
+df.weight = df$Weight # reduce reference lookup time
+weight.avg = mean(df.weight)
+```
+
+### Chromosome Representation
+Similar to the travelling salsesman problem, chromosomes in the load distribution problem can be represented as permutations. Premutation representation are used when individuals of the population consist of the same set of chromosomes except for the difference in their ordering, rather than independent range-limited values per positions in typical binary and real-value representation. The chromosomes consist of Package IDs and the poistions on the string represents the Location/Space Ids. Each group of 4 consecutive elements is a stack with the smallest indexed element being the one closest to the ground, i.e. the one that has to be the heaviest of the stack.
+
+### Fitness Function
+The fitness function minimises the spread/deviation between the average package weight of each stack, x, and the average weight of all packages, AV, i.e. $min(\sum_i (x_i - AV)^{2})$.
+```{r fitness}
+fitness = function (ids) {
+        weights = sapply(ids, function (id) df.weight[id]) # map id to weights
+        stack.matrix = matrix(weights, ncol = 4, byrow = T) # group stack as rows
+        stack.avg = apply(stack.matrix, 1, mean)
+        spread = sum((stack.avg - weight.avg) ^ 2)
+        -spread # negate to minimise
+}
+```
+
+The fitness value of the individual from the given solution can then be generated using the finess function and be kept as a benchmark later.
+```{r given}
+given.individual = given$PackageID[!is.na(given$PackageID)]
+given.fitness = fitness(given.individual)
+```
+
+### Crossover, Mutation and Other Parameters
+The GA is set conervatively to run with a max iteration/generation of 5000 and will terminate when the fitness does not improve in 500 consecutive iterations. The mutation probability has been increased from a value of 0.1 to 0.2 and the crossover probability has been decreased from 0.8 to 0.7. The popluation, selection, crossover and mutation operators are left as default. The default population is selected using a uniform distrubution over the entire possibilities of population. The default selection operator is a linear rank selection - the higher the fitness rank the more likely an individual will be selected. The default crossover operator is an order crossover, where a section of consecutive alelles is fixed from the first parent and the remaining spaces are filled with chromosomes that are not in the section, in the order that they appear in the second parent. The default mutation operator is a simple inverse mutation, where 2 random cut points are selected and the substring in between them is reversed.
+```{R ga, cache = T}
+ga.result = ga('permutation', fitness, min = 1, max = package.count,
+               maxiter = 5000, run = 500, pmutation = 0.2, pcrossover = 0.7, seed = 2)
+```
+
+### Constraints
+As mentioned, each stack is constraint by requiring that the heaviest package to be at the bottom and the lightest at the top. We have decided against implementing a hard constraint within the fitness function as it might prematurely reject good individuals that can be sorted into valid results. We have instead decided to sort the stacks after the best individual is selected, as reducing it to a one-time opearation on a single individual is also more computationally effective.
+```{R sort}
+# constraint - sort by weight in stack
+best = unname(summary(ga.result)$solution[1,]) # select the 1st of many solutions
+best.matrix = matrix(best, ncol = 4, byrow = T)
+best.weight = sapply(best, function (id) df.weight[id])
+best.weight.matrix = matrix(best.weight, ncol = 4, byrow = T)
+best.sorted = c(apply(cbind(best.matrix, best.weight.matrix), 1, function (v) {
+        ids = v[1:4]
+        weights = v[5:8]
+        ids[order(weights, decreasing = T)] # smaller pos index -> closer to bottom
+}))
+```
+
+
+## Results, Understandings and Findings
+
+The output show how the fitness values of the the population progress over generations. It then compares the best fitness against the fitness of the given model individual, and finally prints the best (or one of the best) individual that also fulfill the constraint of sorted stacks.
+```{R output.no.res, results = 'hide'}
+# output results
+png(filename = "ga_plot.png")
+plot(ga.result)
+
+ga.summary = summary(ga.result)
+cat('Given fitness: ', given.fitness, '\n')
+cat('GA fitness: ', ga.summary$fitness, '\n')
+cat('Given fitness / GA fitness: ', given.fitness/ga.summary$fitness, '\n')
+
+cat('Best individual:\n')
+print(strwrap(best.sorted))
+
+dev.off()
+```
+```{R output.only.res, echo = F}
+# version of output for consolidation to report only
+plot(ga.result)
+cat('Given fitness: ', given.fitness, '\n')
+cat('GA fitness: ', ga.summary$fitness, '\n')
+cat('Given fitness / GA fitness: ', given.fitness/ga.summary$fitness, '\n')
+cat('Best individual:\n')
+print(strwrap(best.sorted))
+```
+We found that by increasing the mutation rate from 0.1 to 0.2, it improves the result as the algorithm allows exploration and thus is less likely to get stuck in a suboptima; it also acclerates the approach to a good optima. However as the alogrithm approaches the 'global optima', a high mutation rate may not be as desirable as it introduces too much regression, as seen from the mean points of the graph. This thereby limits how high we can set our mutation rate. We were able to improve our performance by slightly reducing our crossover rate, but much is to be explored about different crossover operators and their effects in the context off differences between intra-stack and inter-stack boundaries.
+
+The finess result has seen an improvement of about 19 times at -0.1523438 from the benchmark of -2.902344. It took 1639 generations, but it is worth noting that as we have set a run of 500 iteration, the best individual would have already been found 500 generations prior, at generation 1139.
+
+
+## Conclusion and Future Improvements
+
+We are pleased with the fitness gains it has achieve, at a relatively cheap cost in terms of computation time - a crude measure puts it at less than half a minute on a 2013 MacBook Air. We have also gained a better understanding of the different classes of GA problems and their parameters, especially for permutation type GA problems.
+
+However our work is not perfect and deserves further improvement. Mutation and crossover affects differently across different stages of the algorithm and would improve if dynamic rates that changes as the generation progresses were used. Also, the mutation and crossover operator deserves more research or customisation to treat intra-stack and inter-stack borders differently. From this point, we could also intergrate or port the code to a backend web service and build an interactive web application on top so that layman users in the shipping industry may be able to use it.
+
+## References
+
